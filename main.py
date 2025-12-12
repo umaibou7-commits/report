@@ -13,12 +13,11 @@ from openai import OpenAI
 
 
 # ======================
-# トークン認証
+# トークン認証（必須化）
 # ======================
 
 def require_access_token(x_access_token: Optional[str]) -> None:
     expected = os.getenv("ACCESS_TOKEN")
-    # 「必須化」なので、未設定ならサーバ設定ミスとしてエラー
     if not expected:
         raise HTTPException(status_code=500, detail="ACCESS_TOKEN がサーバー側で設定されていません")
     if not x_access_token or x_access_token != expected:
@@ -99,6 +98,7 @@ HTML_PAGE = """<!DOCTYPE html>
       font-size: 0.85rem;
       color: #475569;
       margin-left: 8px;
+      word-break: break-word;
     }
     .status.error { color: #b91c1c; }
 
@@ -193,7 +193,15 @@ HTML_PAGE = """<!DOCTYPE html>
     <form id="report-form">
       <label>アクセス用トークン（共通パスワード）</label>
       <input type="password" id="access_token" placeholder="チーム共有のトークンを入力" required />
-      <span class="subtext">※ このトークンが一致しない場合、レポート生成はできません（401）</span>
+
+      <div class="button-row" style="margin-top:8px;">
+        <label style="display:flex;gap:8px;align-items:center;font-weight:600;margin:0;">
+          <input type="checkbox" id="remember_token" />
+          この端末にトークンを保存
+        </label>
+        <button type="button" class="btn btn-ghost" id="forget_token_btn">保存トークンを削除</button>
+      </div>
+      <span class="subtext">※ 共有PCの場合は保存しないでください（保存するとそのPCのブラウザに残ります）</span>
 
       <label>クリニック名（タイトル用）</label>
       <input type="text" name="clinic_name" id="clinic_name" placeholder="例：長尾歯科医院" />
@@ -294,6 +302,10 @@ HTML_PAGE = """<!DOCTYPE html>
     const charCountEl = document.getElementById("char-count");
 
     const accessTokenInput = document.getElementById("access_token");
+    const rememberTokenCheckbox = document.getElementById("remember_token");
+    const forgetTokenBtn = document.getElementById("forget_token_btn");
+    const TOKEN_KEY = "report_access_token_v1";
+
     const clinicNameInput = document.getElementById("clinic_name");
     const domainInput = document.getElementById("domain");
     const monthPrevInput = document.getElementById("month_prev");
@@ -458,6 +470,24 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     });
 
+    // 起動時に保存トークンがあれば復元
+    window.addEventListener("DOMContentLoaded", () => {
+      const saved = localStorage.getItem(TOKEN_KEY);
+      if (saved) {
+        accessTokenInput.value = saved;
+        rememberTokenCheckbox.checked = true;
+      }
+    });
+
+    // 保存トークンを削除（ログアウト的に使う）
+    forgetTokenBtn.addEventListener("click", () => {
+      localStorage.removeItem(TOKEN_KEY);
+      accessTokenInput.value = "";
+      rememberTokenCheckbox.checked = false;
+      statusEl.textContent = "保存トークンを削除しました。";
+      statusEl.classList.remove("error");
+    });
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       statusEl.textContent = "";
@@ -475,6 +505,13 @@ HTML_PAGE = """<!DOCTYPE html>
         statusEl.textContent = "アクセス用トークンを入力してください。";
         statusEl.classList.add("error");
         return;
+      }
+
+      // トークン保存（チェックONのときだけ）
+      if (rememberTokenCheckbox.checked) {
+        localStorage.setItem(TOKEN_KEY, token);
+      } else {
+        localStorage.removeItem(TOKEN_KEY);
       }
 
       const fd = new FormData(form);
@@ -529,19 +566,38 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     });
 
+    // 一括クリア：トークンは消さない（デフォ）
     clearBtn.addEventListener("click", () => {
+      // フォームリセットで token も消えるので、保存されているなら復元しておく
       form.reset();
+
+      // ファイル表示リセット
+      prevLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
+      currLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
+
+      // 出力リセット
       output.value = "";
       updateCharCount();
-      statusEl.textContent = "";
-      statusEl.classList.remove("error");
       dlBtn.disabled = true;
       copyBtn.disabled = true;
       lastFilename = "report.md";
-      prevLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
-      currLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
       titleField.value = "";
       dashCard.style.display = "none";
+
+      // ステータスクリア
+      statusEl.textContent = "";
+      statusEl.classList.remove("error");
+
+      // トークンは消さない（保存があれば復元 / なければ空）
+      const saved = localStorage.getItem(TOKEN_KEY);
+      if (saved) {
+        accessTokenInput.value = saved;
+        rememberTokenCheckbox.checked = true;
+      } else {
+        // もともと保存してない人は空でOK（毎回入力運用）
+        accessTokenInput.value = "";
+        rememberTokenCheckbox.checked = false;
+      }
     });
 
     dlBtn.addEventListener("click", () => {
@@ -815,7 +871,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ※ここは後で絞るのがおすすめ（必要なら言って）
+    allow_origins=["*"],  # 後で絞るのがおすすめ
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -836,7 +892,6 @@ async def root():
 
 @app.post("/generate-report", response_model=ReportResponse)
 async def generate_report(
-    # ヘッダーでトークンを受け取り（必須化）
     x_access_token: Optional[str] = Header(default=None, alias="X-Access-Token"),
 
     clinic_name: str = Form(""),
@@ -847,7 +902,6 @@ async def generate_report(
     prev_csv: UploadFile = File(...),
     curr_csv: UploadFile = File(...),
 ):
-    # トークン認証（不一致は401）
     require_access_token(x_access_token)
 
     openai_api_key = os.getenv("OPENAI_API_KEY")
