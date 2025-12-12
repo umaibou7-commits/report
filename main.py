@@ -2,7 +2,7 @@ import os
 import io
 import csv
 import json
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -24,15 +24,13 @@ HTML_PAGE = """<!DOCTYPE html>
   <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      max-width: 960px;
+      max-width: 980px;
       margin: 24px auto;
       padding: 0 16px 40px;
       background: #f5f7fb;
     }
-    h1 {
-      font-size: 1.6rem;
-      margin-bottom: 0.5rem;
-    }
+    h1 { font-size: 1.6rem; margin-bottom: 0.5rem; }
+
     .card {
       background: #fff;
       border-radius: 12px;
@@ -40,12 +38,14 @@ HTML_PAGE = """<!DOCTYPE html>
       box-shadow: 0 4px 18px rgba(0,0,0,0.06);
       margin-bottom: 16px;
     }
+
     label {
       display: block;
       font-size: 0.9rem;
       margin: 8px 0 4px;
       font-weight: 600;
     }
+
     input[type="text"],
     input[type="month"],
     textarea {
@@ -56,12 +56,14 @@ HTML_PAGE = """<!DOCTYPE html>
       font-size: 0.9rem;
       box-sizing: border-box;
     }
+
     textarea {
-      min-height: 260px;
+      min-height: 280px;
       resize: vertical;
       font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       white-space: pre-wrap;
     }
+
     .btn {
       display: inline-flex;
       align-items: center;
@@ -75,21 +77,17 @@ HTML_PAGE = """<!DOCTYPE html>
       font-weight: 600;
       cursor: pointer;
     }
-    .btn:disabled {
-      opacity: 0.6;
-      cursor: default;
-    }
-    .btn-secondary {
-      background: #0f172a;
-    }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+    .btn-secondary { background: #0f172a; }
+    .btn-ghost { background: #e2e8f0; color: #0f172a; }
+
     .status {
       font-size: 0.85rem;
       color: #475569;
       margin-left: 8px;
     }
-    .status.error {
-      color: #b91c1c;
-    }
+    .status.error { color: #b91c1c; }
+
     .button-row {
       margin-top: 12px;
       display: flex;
@@ -97,6 +95,7 @@ HTML_PAGE = """<!DOCTYPE html>
       gap: 8px;
       align-items: center;
     }
+
     .drop-area {
       margin-top: 4px;
       padding: 16px;
@@ -107,11 +106,66 @@ HTML_PAGE = """<!DOCTYPE html>
       color: #64748b;
       background: #f8fafc;
       cursor: pointer;
+      user-select: none;
     }
     .drop-area.highlight {
       border-color: #2563eb;
       background: #eff6ff;
       color: #1d4ed8;
+    }
+
+    .subtext {
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-top: 4px;
+      display: block;
+    }
+
+    /* Dashboard */
+    .dash-title {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    #dash-wrap {
+      border: 1px solid #e2e8f0;
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .dash-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .dash-box {
+      background: #f8fafc;
+      border-radius: 10px;
+      padding: 10px 10px;
+      border: 1px solid #e2e8f0;
+    }
+    .dash-label { color: #64748b; font-size: 0.78rem; }
+    .dash-value { font-size: 1.05rem; font-weight: 800; margin-top: 2px; }
+    .dash-mini { color: #64748b; font-size: 0.75rem; margin-top: 2px; }
+
+    .bar-outer {
+      margin-top: 8px;
+      height: 8px;
+      width: 100%;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+    }
+    .bar-inner {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2563eb, #4f46e5);
+      transition: width 0.3s ease;
+    }
+
+    @media (max-width: 720px) {
+      .dash-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -123,17 +177,28 @@ HTML_PAGE = """<!DOCTYPE html>
 
   <div class="card">
     <form id="report-form">
-      <label>対象サイトのURL</label>
-      <input type="text" name="domain" placeholder="https://example-clinic.com" required />
+      <label>クリニック名（タイトル用）</label>
+      <input type="text" name="clinic_name" id="clinic_name" placeholder="例：長尾歯科医院" />
+      <span class="subtext">未入力の場合はドメイン名で代用します</span>
 
-      <label>先月</label>
-      <input type="month" name="month_prev" required />
+      <label>対象サイトのURL</label>
+      <input type="text" name="domain" id="domain" placeholder="https://example-clinic.com" required />
+
+      <label>先月（ここを選ぶと今月が自動反映されます）</label>
+      <input type="month" name="month_prev" id="month_prev" required />
 
       <label>今月</label>
-      <input type="month" name="month_current" required />
+      <input type="month" name="month_current" id="month_current" required />
 
       <label>ブログ判定パス（カンマ区切り）</label>
       <input type="text" name="blog_paths" value="/blog,/column" />
+      <span class="subtext">例: /blog,/column,/news/column など（URL内に含まれていればブログ扱い）</span>
+
+      <label>レポートタイトル（自動生成）</label>
+      <input type="text" id="title-field" readonly />
+      <div class="button-row" style="margin-top:8px;">
+        <button type="button" class="btn btn-ghost" id="copy-title-btn">タイトルをコピー</button>
+      </div>
 
       <label>先月のCSV（Top pages）</label>
       <div class="drop-area" id="drop-prev">
@@ -155,13 +220,56 @@ HTML_PAGE = """<!DOCTYPE html>
     </form>
   </div>
 
+  <div class="card" id="dash-card" style="display:none;">
+    <div class="dash-title">📊 全体トラフィック（先月⇄今月）</div>
+
+    <!-- スクショ/画像化しやすい“枠” -->
+    <div id="dash-wrap">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+        <div style="font-weight:800;" id="dash-headline">—</div>
+        <div style="color:#64748b;font-size:0.8rem;" id="dash-sub">—</div>
+      </div>
+
+      <div class="dash-grid" style="margin-top:10px;">
+        <div class="dash-box">
+          <div class="dash-label">先月 合計トラフィック</div>
+          <div class="dash-value" id="dash-prev">-</div>
+          <div class="bar-outer"><div class="bar-inner" id="bar-prev"></div></div>
+        </div>
+        <div class="dash-box">
+          <div class="dash-label">今月 合計トラフィック</div>
+          <div class="dash-value" id="dash-current">-</div>
+          <div class="bar-outer"><div class="bar-inner" id="bar-current"></div></div>
+        </div>
+        <div class="dash-box">
+          <div class="dash-label">差分 / 変化率</div>
+          <div class="dash-value" id="dash-diff">-</div>
+          <div class="dash-mini" id="dash-diff-note">—</div>
+          <div class="bar-outer"><div class="bar-inner" id="bar-diff"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <span class="subtext">この枠ごとスクショしてレポートの冒頭に貼ると分かりやすいです（さらに下の「画像コピー」も使えます）</span>
+
+    <div class="button-row" style="margin-top:10px;">
+      <button type="button" class="btn btn-ghost" id="copy-dash-image-btn">ダッシュボードを画像としてコピー</button>
+      <button type="button" class="btn btn-ghost" id="download-dash-image-btn">ダッシュボードをPNGで保存</button>
+    </div>
+  </div>
+
   <div class="card">
-    <label>生成されたレポート（Markdown / このままNotionにコピペOK）</label>
+    <label>生成されたレポート（Markdown / NotionにそのままコピペOK）</label>
     <textarea id="report-output" placeholder="ここにレポートが表示されます"></textarea>
+    <span class="subtext" id="char-count">文字数: 0</span>
     <div class="button-row" style="margin-top:8px;">
+      <button class="btn btn-ghost" id="copy-btn" disabled>レポートをコピー</button>
       <button class="btn btn-secondary" id="download-btn" disabled>.mdとしてダウンロード</button>
     </div>
   </div>
+
+  <!-- html2canvas（ダッシュボードを画像にするため） -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
   <script>
     const BACKEND_URL = "/generate-report";
@@ -170,8 +278,18 @@ HTML_PAGE = """<!DOCTYPE html>
     const statusEl = document.getElementById("status");
     const submitBtn = document.getElementById("submit-btn");
     const clearBtn = document.getElementById("clear-btn");
+
     const output = document.getElementById("report-output");
     const dlBtn = document.getElementById("download-btn");
+    const copyBtn = document.getElementById("copy-btn");
+    const charCountEl = document.getElementById("char-count");
+
+    const clinicNameInput = document.getElementById("clinic_name");
+    const domainInput = document.getElementById("domain");
+    const monthPrevInput = document.getElementById("month_prev");
+    const monthCurrentInput = document.getElementById("month_current");
+    const titleField = document.getElementById("title-field");
+    const copyTitleBtn = document.getElementById("copy-title-btn");
 
     const prevInput = document.getElementById("prev_csv");
     const currInput = document.getElementById("curr_csv");
@@ -180,18 +298,28 @@ HTML_PAGE = """<!DOCTYPE html>
     const prevLabel = document.getElementById("prev-file-label");
     const currLabel = document.getElementById("curr-file-label");
 
+    const dashCard = document.getElementById("dash-card");
+    const dashWrap = document.getElementById("dash-wrap");
+    const dashHeadline = document.getElementById("dash-headline");
+    const dashSub = document.getElementById("dash-sub");
+    const dashPrev = document.getElementById("dash-prev");
+    const dashCurrent = document.getElementById("dash-current");
+    const dashDiff = document.getElementById("dash-diff");
+    const dashDiffNote = document.getElementById("dash-diff-note");
+    const barPrev = document.getElementById("bar-prev");
+    const barCurrent = document.getElementById("bar-current");
+    const barDiff = document.getElementById("bar-diff");
+    const copyDashImageBtn = document.getElementById("copy-dash-image-btn");
+    const downloadDashImageBtn = document.getElementById("download-dash-image-btn");
+
     let lastFilename = "report.md";
 
-    function preventDefaults(e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
 
     function setupDropArea(dropEl, inputEl, labelEl) {
       ["dragenter", "dragover", "dragleave", "drop"].forEach(ev => {
         dropEl.addEventListener(ev, preventDefaults, false);
       });
-
       ["dragenter", "dragover"].forEach(ev => {
         dropEl.addEventListener(ev, () => dropEl.classList.add("highlight"), false);
       });
@@ -219,16 +347,178 @@ HTML_PAGE = """<!DOCTYPE html>
       });
     }
 
+    function updateCharCount() {
+      charCountEl.textContent = "文字数: " + (output.value.length).toString();
+    }
+
+    function monthToJP(ym) {
+      if (!ym) return "";
+      const [y, m] = ym.split("-");
+      if (!y || !m) return ym;
+      return `${y}年${parseInt(m, 10)}月`;
+    }
+
+    function parseHostname(url) {
+      try {
+        const u = new URL(url);
+        return u.host;
+      } catch(e) {
+        return url || "";
+      }
+    }
+
+    function addOneMonth(ym) {
+      if (!ym) return "";
+      const parts = ym.split("-");
+      if (parts.length !== 2) return "";
+      let y = parseInt(parts[0], 10);
+      let m = parseInt(parts[1], 10);
+      if (isNaN(y) || isNaN(m)) return "";
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+      return `${y}-${String(m).padStart(2, "0")}`;
+    }
+
+    function updateTitleField() {
+      const prev = monthPrevInput.value;
+      const curr = monthCurrentInput.value;
+      const clinic = (clinicNameInput.value || "").trim();
+      const dom = parseHostname(domainInput.value || "");
+      if (!prev || !curr) { titleField.value = ""; return; }
+      const name = clinic ? clinic : dom;
+      titleField.value = `${monthToJP(prev)}と${monthToJP(curr)}のアクセス比較分析（${name}）`;
+    }
+
+    function formatNum(n) {
+      if (n === null || n === undefined) return "-";
+      return Math.round(n).toLocaleString("ja-JP");
+    }
+    function formatPct(p) {
+      if (p === null || p === undefined) return "-";
+      return (Math.round(p * 10) / 10).toString() + "%";
+    }
+
+    function updateDashboard(summary, titleText) {
+      if (!summary || !summary.all) { dashCard.style.display = "none"; return; }
+      const all = summary.all;
+      const prev = all.total_traffic_prev || 0;
+      const curr = all.total_traffic_current || 0;
+      const diff = all.total_diff || 0;
+      const ratio = all.total_diff_ratio;
+
+      dashHeadline.textContent = titleText || "全体トラフィックの推移";
+      dashSub.textContent = "※ Ahrefs Top pages（CSV）集計";
+
+      dashPrev.textContent = formatNum(prev);
+      dashCurrent.textContent = formatNum(curr);
+
+      const sign = diff >= 0 ? "+" : "";
+      dashDiff.textContent = `${sign}${formatNum(diff)} / ${formatPct(ratio)}`;
+
+      let note = "";
+      if (prev === 0 && curr > 0) note = "先月が0のため変化率は参考値です";
+      if (prev > 0 && Math.abs(diff) < (prev * 0.05)) note = "変化は小さめ（±5%以内）";
+      if (prev > 0 && diff > (prev * 0.1)) note = "増加傾向（+10%超）";
+      if (prev > 0 && diff < -(prev * 0.1)) note = "減少傾向（-10%超）";
+      dashDiffNote.textContent = note;
+
+      const maxVal = Math.max(prev, curr, Math.abs(diff), 1);
+      barPrev.style.width = Math.round((prev / maxVal) * 100) + "%";
+      barCurrent.style.width = Math.round((curr / maxVal) * 100) + "%";
+      barDiff.style.width = Math.round((Math.abs(diff) / maxVal) * 100) + "%";
+
+      dashCard.style.display = "block";
+    }
+
+    async function dashboardToCanvas() {
+      // 背景白固定にしてNotion貼り付け時に見やすくする
+      return await html2canvas(dashWrap, { backgroundColor: "#ffffff", scale: 2 });
+    }
+
+    async function copyDashboardImage() {
+      try {
+        const canvas = await dashboardToCanvas();
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error("画像生成に失敗しました");
+
+        // ClipboardItem が使える環境なら画像コピー
+        if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          statusEl.textContent = "ダッシュボード画像をコピーしました（Notionに貼り付けできます）";
+          statusEl.classList.remove("error");
+          return;
+        }
+
+        // フォールバック：ダウンロードを促す
+        statusEl.textContent = "この環境では画像コピーができないため、PNG保存をご利用ください。";
+        statusEl.classList.add("error");
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "画像コピーに失敗しました。PNG保存（ダウンロード）をお試しください。";
+        statusEl.classList.add("error");
+      }
+    }
+
+    async function downloadDashboardImage() {
+      try {
+        const canvas = await dashboardToCanvas();
+        const url = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "dashboard.png";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        statusEl.textContent = "ダッシュボードPNGを保存しました。Notionへドラッグで貼れます。";
+        statusEl.classList.remove("error");
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "PNG保存に失敗しました。スクショで代替してください。";
+        statusEl.classList.add("error");
+      }
+    }
+
     setupDropArea(prevDrop, prevInput, prevLabel);
     setupDropArea(currDrop, currInput, currLabel);
+
+    output.addEventListener("input", updateCharCount);
+
+    clinicNameInput.addEventListener("input", updateTitleField);
+    domainInput.addEventListener("input", updateTitleField);
+
+    monthPrevInput.addEventListener("change", () => {
+      // 先月を選んだら今月を+1に自動反映
+      monthCurrentInput.value = addOneMonth(monthPrevInput.value);
+      updateTitleField();
+    });
+    monthCurrentInput.addEventListener("change", updateTitleField);
+
+    copyTitleBtn.addEventListener("click", async () => {
+      try {
+        if (!titleField.value) { updateTitleField(); }
+        await navigator.clipboard.writeText(titleField.value || "");
+        statusEl.textContent = "タイトルをコピーしました。Notionのページタイトルに貼り付けてください。";
+        statusEl.classList.remove("error");
+      } catch(e) {
+        statusEl.textContent = "タイトルのコピーに失敗しました。手動でコピーしてください。";
+        statusEl.classList.add("error");
+      }
+    });
+
+    copyDashImageBtn.addEventListener("click", copyDashboardImage);
+    downloadDashImageBtn.addEventListener("click", downloadDashboardImage);
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       statusEl.textContent = "";
       statusEl.classList.remove("error");
       output.value = "";
+      updateCharCount();
       dlBtn.disabled = true;
+      copyBtn.disabled = true;
+      dashCard.style.display = "none";
 
+      updateTitleField();
       const fd = new FormData(form);
 
       submitBtn.disabled = true;
@@ -236,10 +526,7 @@ HTML_PAGE = """<!DOCTYPE html>
       statusEl.textContent = "OpenAIでレポート生成中です…";
 
       try {
-        const res = await fetch(BACKEND_URL, {
-          method: "POST",
-          body: fd,
-        });
+        const res = await fetch(BACKEND_URL, { method: "POST", body: fd });
 
         if (!res.ok) {
           let serverMessage = "";
@@ -260,11 +547,23 @@ HTML_PAGE = """<!DOCTYPE html>
         const data = await res.json();
         output.value = data.report || "";
         lastFilename = data.filename || "report.md";
-        dlBtn.disabled = !output.value;
-        statusEl.textContent = "レポート生成が完了しました。Notionにコピペしてください。";
+
+        if (data.title) titleField.value = data.title;
+        updateCharCount();
+
+        const hasText = !!output.value;
+        dlBtn.disabled = !hasText;
+        copyBtn.disabled = !hasText;
+
+        // ダッシュボード更新（スクショ/画像コピー用）
+        if (data.summary) {
+          updateDashboard(data.summary, titleField.value || "全体トラフィックの推移");
+        }
+
+        statusEl.textContent = "完了！タイトル→ダッシュボード（画像可）→レポート本文の順でNotionに貼るとキレイです。";
       } catch (err) {
         console.error(err);
-        statusEl.textContent = err.message || "エラーが発生しました。詳細はコンソールを確認してください。";
+        statusEl.textContent = err.message || "エラーが発生しました。";
         statusEl.classList.add("error");
       } finally {
         submitBtn.disabled = false;
@@ -275,12 +574,16 @@ HTML_PAGE = """<!DOCTYPE html>
     clearBtn.addEventListener("click", () => {
       form.reset();
       output.value = "";
+      updateCharCount();
       statusEl.textContent = "";
       statusEl.classList.remove("error");
       dlBtn.disabled = true;
+      copyBtn.disabled = true;
       lastFilename = "report.md";
       prevLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
       currLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
+      titleField.value = "";
+      dashCard.style.display = "none";
     });
 
     dlBtn.addEventListener("click", () => {
@@ -294,6 +597,20 @@ HTML_PAGE = """<!DOCTYPE html>
       a.remove();
       URL.revokeObjectURL(url);
     });
+
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(output.value || "");
+        statusEl.textContent = "レポートをコピーしました。Notionに貼り付けてください。";
+        statusEl.classList.remove("error");
+      } catch(e) {
+        statusEl.textContent = "レポートのコピーに失敗しました。手動でコピーしてください。";
+        statusEl.classList.add("error");
+      }
+    });
+
+    // 初期文字数表示
+    updateCharCount();
   </script>
 </body>
 </html>
@@ -305,9 +622,6 @@ HTML_PAGE = """<!DOCTYPE html>
 # ======================
 
 def guess_column(headers, kind: str):
-    """
-    AhrefsのCSVヘッダーから URL / Traffic / Keyword の列名を推測する
-    """
     lowers = {h.lower(): h for h in headers}
 
     if kind == "url":
@@ -322,17 +636,14 @@ def guess_column(headers, kind: str):
     else:
         return None
 
-    # 完全一致
     for cand in candidates:
         if cand in lowers:
             return lowers[cand]
 
-    # 部分一致
     for h in headers:
-        h_low = h.lower()
-        if any(ck in h_low for ck in contains):
+        hl = h.lower()
+        if any(s in hl for s in contains):
             return h
-
     return None
 
 
@@ -342,11 +653,8 @@ def load_csv_pages_from_bytes(
     traffic_col_opt: Optional[str] = None,
     keyword_col_opt: Optional[str] = None,
 ):
-    """
-    アップロードされたCSV（バイト列）からページ情報を読み込む
-    """
-    # encoding推定（UTF-8 or Shift-JIS）
-    for enc in ["utf-8-sig", "cp932"]:
+    # UTF-16 も含めて“壊れにくく”する（Ahrefs運用の揺れ対策）
+    for enc in ["utf-8-sig", "cp932", "utf-16", "utf-16-le", "utf-16-be"]:
         try:
             text = file_bytes.decode(enc)
             break
@@ -355,7 +663,7 @@ def load_csv_pages_from_bytes(
     else:
         raise HTTPException(
             status_code=400,
-            detail="CSVの文字コードが不明です（UTF-8 or Shift-JISで保存してください）",
+            detail="CSVの文字コードが不明です（UTF-8 / Shift-JIS / UTF-16 で保存してください）",
         )
 
     f = io.StringIO(text)
@@ -384,10 +692,10 @@ def load_csv_pages_from_bytes(
     for row in reader:
         url = row.get(url_col)
         traffic_raw = row.get(traffic_col)
-        if not url or not traffic_raw:
+        if not url or traffic_raw is None:
             continue
 
-        traffic_raw = traffic_raw.replace(",", "").strip()
+        traffic_raw = str(traffic_raw).replace(",", "").strip()
         if traffic_raw == "":
             continue
 
@@ -397,21 +705,12 @@ def load_csv_pages_from_bytes(
             continue
 
         keyword = row.get(keyword_col)
-        pages.append(
-            {
-                "url": url,
-                "traffic": traffic,
-                "top_keyword": keyword,
-            }
-        )
+        pages.append({"url": url, "traffic": traffic, "top_keyword": keyword})
 
     return pages
 
 
 def summarize_pages(pages: List[dict]):
-    """
-    全体のトラフィック合計などを集計
-    """
     if not pages:
         return {
             "total_traffic_prev": 0,
@@ -436,15 +735,11 @@ def summarize_pages(pages: List[dict]):
 
 
 def merge_months(prev_pages, curr_pages, blog_paths=None):
-    """
-    先月 / 今月のページデータをマージし、差分とブログ判定を付与
-    """
     if blog_paths is None:
         blog_paths = ["/blog", "/column"]
 
-    merged = {}
+    merged: Dict[str, Dict[str, Any]] = {}
 
-    # 先月
     for p in prev_pages:
         url = p["url"]
         merged.setdefault(url, {})
@@ -452,7 +747,6 @@ def merge_months(prev_pages, curr_pages, blog_paths=None):
         merged[url]["prev_traffic"] = p["traffic"]
         merged[url]["top_keyword_prev"] = p.get("top_keyword")
 
-    # 今月
     for p in curr_pages:
         url = p["url"]
         merged.setdefault(url, {})
@@ -465,10 +759,7 @@ def merge_months(prev_pages, curr_pages, blog_paths=None):
         prev_tr = float(data.get("prev_traffic") or 0.0)
         curr_tr = float(data.get("current_traffic") or 0.0)
         diff = curr_tr - prev_tr
-        diff_ratio = None
-        if prev_tr > 0:
-            diff_ratio = diff / prev_tr * 100.0
-
+        diff_ratio = (diff / prev_tr * 100.0) if prev_tr > 0 else None
         is_blog = any(path in url for path in blog_paths)
 
         pages.append(
@@ -488,8 +779,20 @@ def merge_months(prev_pages, curr_pages, blog_paths=None):
         "all": summarize_pages(pages),
         "blog_only": summarize_pages([p for p in pages if p["is_blog"]]),
     }
-
     return {"pages": pages, "summary": summary}
+
+
+def ym_to_japanese(ym: str) -> str:
+    try:
+        y, m = ym.split("-")
+        return f"{y}年{int(m)}月"
+    except Exception:
+        return ym
+
+
+def normalize_domain(domain: str) -> str:
+    parsed = urlparse(domain)
+    return parsed.netloc or domain
 
 
 # ======================
@@ -501,6 +804,7 @@ def generate_report_with_openai(
     domain: str,
     month_prev: str,
     month_current: str,
+    title: str,
     openai_api_key: str,
 ) -> str:
     client = OpenAI(api_key=openai_api_key)
@@ -514,30 +818,34 @@ def generate_report_with_openai(
 - 比較期間: 前月（{month_prev}） と 今月（{month_current}）
 - 入力データは URL ごとのオーガニックトラフィックとキーワードの情報です。
 - `is_blog` が true のページはブログ記事（/blog や /column 等）として扱ってください。
+- summary.all / summary.blog_only に「先月・今月の合計トラフィック」「差分」「変化率」が入っています。
 
-【フォーマット（重要：Notionにそのまま貼る想定）】
-- Notion にそのままコピペできる Markdown 形式で書く
-- 見出しは必ず H2（例: `## 1. 今月のサマリー`）を使う。必要に応じて H3（`###`）も可
-- 各セクションの先頭に 1つ以上の絵文字を入れる（📈📝💡✅ など）
-- 箇条書き・番号付きリストを積極的に使う
-- 必要であれば Markdown テーブル（`|列1|列2|`）を使ってよい
+【出力フォーマット（Notionにそのまま貼る想定）】
+- レポート1行目に必ずタイトル（H1）：
+  # {title}
+- 見出しは H2（##）中心。各H2タイトルの先頭に絵文字（📊📈📝✅💡）を付ける
 - コードブロック（```）は絶対に使わない
+- 重要な数字（全体合計・差分・変化率）は太字で強調してよい
+- 冒頭に以下を必ず入れる：
+  1) 「全体サマリー表」(summary.all)
+  2) 「ブログサマリー表」(summary.blog_only)
+  それぞれ列は「指標 / 前月 / 今月 / 差分 / 変化率」
+  ※表の数値は summary の実数を使い、推測しない
 
 【レポート構成】
-- 1. 今月のサマリー（重要ポイント3〜5個）
-- 2. 全体のアクセス傾向（URL / Traffic / Top keyword 観点）
-- 3. ブログ（/blog 等）のアクセス分析
-- 4. 次月以降の具体的なアクション提案（3〜5個）
+## 📌 1. 今月のサマリー（重要ポイント3〜5個）
+## 📈 2. 全体のアクセス傾向（URL / Traffic / Top keyword）
+## ✍️ 3. ブログ（/blog等）のアクセス分析（blog_onlyの合計変化も言及）
+## ✅ 4. 次月にやるべき具体アクション（3〜5個）
 
 【トーン】
-- 初心者のお客様にもわかる言葉で説明する
-- 難しい専門用語は出来るだけ避ける
-- 「結論 → 根拠 → 具体例」の順で書く
-- 全体で 4,000〜6,000 文字程度
+- 初心者でも分かる言葉
+- 「結論 → 根拠 → 具体例」
+- 4,000〜6,000文字程度
 """
 
     resp = client.responses.create(
-        model="gpt-4.1-mini",
+        model="gpt-4.1",
         input=[
             {"role": "system", "content": instructions},
             {"role": "user", "content": json.dumps(report_input, ensure_ascii=False)},
@@ -547,7 +855,6 @@ def generate_report_with_openai(
     try:
         return resp.output[0].content[0].text
     except Exception:
-        # 何かあったときは生のレスポンスを文字列化
         return str(resp)
 
 
@@ -569,6 +876,8 @@ app.add_middleware(
 class ReportResponse(BaseModel):
     report: str
     filename: str
+    title: str
+    summary: Dict[str, Any]
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -578,6 +887,7 @@ async def root():
 
 @app.post("/generate-report", response_model=ReportResponse)
 async def generate_report(
+    clinic_name: str = Form(""),
     domain: str = Form(...),
     month_prev: str = Form(...),
     month_current: str = Form(...),
@@ -601,11 +911,15 @@ async def generate_report(
     blog_path_list = [p.strip() for p in blog_paths.split(",") if p.strip()]
     merged = merge_months(prev_pages, curr_pages, blog_paths=blog_path_list)
 
-    parsed = urlparse(domain)
-    dom = parsed.netloc or domain
+    dom = normalize_domain(domain)
+    jp_prev = ym_to_japanese(month_prev)
+    jp_curr = ym_to_japanese(month_current)
+    name_for_title = clinic_name.strip() if clinic_name.strip() else dom
+    title = f"{jp_prev}と{jp_curr}のアクセス比較分析（{name_for_title}）"
 
     report_input = {
         "target": domain,
+        "clinic_name": clinic_name,
         "month_prev": month_prev,
         "month_current": month_current,
         "pages": merged["pages"],
@@ -613,10 +927,15 @@ async def generate_report(
     }
 
     report_text = generate_report_with_openai(
-        report_input, dom, month_prev, month_current, openai_api_key
+        report_input, dom, month_prev, month_current, title, openai_api_key
     )
 
-    safe_dom = dom.replace(":", "_")
+    safe_dom = dom.replace(":", "_").replace("/", "_")
     filename = f"report_{safe_dom}_{month_current}.md"
 
-    return ReportResponse(report=report_text, filename=filename)
+    return ReportResponse(
+        report=report_text,
+        filename=filename,
+        title=title,
+        summary=merged["summary"],
+    )
