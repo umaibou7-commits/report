@@ -5,10 +5,11 @@ import json
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from openai import OpenAI
 
 
@@ -479,7 +480,7 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     });
 
-    // 保存トークンを削除（ログアウト的に使う）
+    // 保存トークンを削除
     forgetTokenBtn.addEventListener("click", () => {
       localStorage.removeItem(TOKEN_KEY);
       accessTokenInput.value = "";
@@ -566,16 +567,13 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     });
 
-    // 一括クリア：トークンは消さない（デフォ）
+    // 一括クリア：トークンは消さない
     clearBtn.addEventListener("click", () => {
-      // フォームリセットで token も消えるので、保存されているなら復元しておく
       form.reset();
 
-      // ファイル表示リセット
       prevLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
       currLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
 
-      // 出力リセット
       output.value = "";
       updateCharCount();
       dlBtn.disabled = true;
@@ -584,17 +582,14 @@ HTML_PAGE = """<!DOCTYPE html>
       titleField.value = "";
       dashCard.style.display = "none";
 
-      // ステータスクリア
       statusEl.textContent = "";
       statusEl.classList.remove("error");
 
-      // トークンは消さない（保存があれば復元 / なければ空）
       const saved = localStorage.getItem(TOKEN_KEY);
       if (saved) {
         accessTokenInput.value = saved;
         rememberTokenCheckbox.checked = true;
       } else {
-        // もともと保存してない人は空でOK（毎回入力運用）
         accessTokenInput.value = "";
         rememberTokenCheckbox.checked = false;
       }
@@ -806,7 +801,7 @@ def normalize_domain(domain: str) -> str:
 
 
 # ======================
-# OpenAI でレポート生成
+# OpenAI でレポート生成（安全化）
 # ======================
 
 def generate_report_with_openai(
@@ -860,7 +855,16 @@ def generate_report_with_openai(
             {"role": "user", "content": json.dumps(report_input, ensure_ascii=False)},
         ],
     )
-    return resp.output[0].content[0].text
+
+    # 安全にテキスト抽出（output構造が変わっても落ちにくい）
+    text = getattr(resp, "output_text", None)
+    if text:
+        return text
+
+    try:
+        return resp.output[0].content[0].text
+    except Exception:
+        raise RuntimeError("OpenAIの応答からテキストを取り出せませんでした")
 
 
 # ======================
@@ -868,6 +872,15 @@ def generate_report_with_openai(
 # ======================
 
 app = FastAPI()
+
+# ★ 500の原因をブラウザへ返す（デバッグ用）
+@app.exception_handler(Exception)
+async def all_exception_handler(request: Request, exc: Exception):
+    print("UNHANDLED ERROR:", type(exc).__name__, str(exc))
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {str(exc)[:300]}"},
+    )
 
 app.add_middleware(
     CORSMiddleware,
