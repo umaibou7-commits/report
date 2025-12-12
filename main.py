@@ -56,9 +56,6 @@ HTML_PAGE = """<!DOCTYPE html>
       font-size: 0.9rem;
       box-sizing: border-box;
     }
-    input[type="file"] {
-      margin-top: 4px;
-    }
     textarea {
       min-height: 260px;
       resize: vertical;
@@ -77,7 +74,6 @@ HTML_PAGE = """<!DOCTYPE html>
       font-size: 0.95rem;
       font-weight: 600;
       cursor: pointer;
-      margin-top: 12px;
     }
     .btn:disabled {
       opacity: 0.6;
@@ -85,15 +81,37 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .btn-secondary {
       background: #0f172a;
-      margin-left: 8px;
     }
     .status {
       font-size: 0.85rem;
       color: #475569;
-      margin-top: 6px;
+      margin-left: 8px;
     }
-    .error {
+    .status.error {
       color: #b91c1c;
+    }
+    .button-row {
+      margin-top: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .drop-area {
+      margin-top: 4px;
+      padding: 16px;
+      border: 2px dashed #cbd5e1;
+      border-radius: 10px;
+      text-align: center;
+      font-size: 0.85rem;
+      color: #64748b;
+      background: #f8fafc;
+      cursor: pointer;
+    }
+    .drop-area.highlight {
+      border-color: #2563eb;
+      background: #eff6ff;
+      color: #1d4ed8;
     }
   </style>
 </head>
@@ -118,20 +136,31 @@ HTML_PAGE = """<!DOCTYPE html>
       <input type="text" name="blog_paths" value="/blog,/column" />
 
       <label>先月のCSV（Top pages）</label>
-      <input type="file" name="prev_csv" accept=".csv" required />
+      <div class="drop-area" id="drop-prev">
+        <span id="prev-file-label">ここにファイルをドロップするか、クリックして選択</span>
+      </div>
+      <input type="file" name="prev_csv" id="prev_csv" accept=".csv" style="display:none" required />
 
       <label>今月のCSV（Top pages）</label>
-      <input type="file" name="curr_csv" accept=".csv" required />
+      <div class="drop-area" id="drop-curr">
+        <span id="curr-file-label">ここにファイルをドロップするか、クリックして選択</span>
+      </div>
+      <input type="file" name="curr_csv" id="curr_csv" accept=".csv" style="display:none" required />
 
-      <button type="submit" class="btn" id="submit-btn">レポートを生成する</button>
-      <span class="status" id="status"></span>
+      <div class="button-row">
+        <button type="submit" class="btn" id="submit-btn">レポートを生成する</button>
+        <button type="button" class="btn btn-secondary" id="clear-btn">一括クリア</button>
+        <span class="status" id="status"></span>
+      </div>
     </form>
   </div>
 
   <div class="card">
     <label>生成されたレポート（Markdown / このままNotionにコピペOK）</label>
     <textarea id="report-output" placeholder="ここにレポートが表示されます"></textarea>
-    <button class="btn btn-secondary" id="download-btn" disabled>.mdとしてダウンロード</button>
+    <div class="button-row" style="margin-top:8px;">
+      <button class="btn btn-secondary" id="download-btn" disabled>.mdとしてダウンロード</button>
+    </div>
   </div>
 
   <script>
@@ -140,10 +169,58 @@ HTML_PAGE = """<!DOCTYPE html>
     const form = document.getElementById("report-form");
     const statusEl = document.getElementById("status");
     const submitBtn = document.getElementById("submit-btn");
+    const clearBtn = document.getElementById("clear-btn");
     const output = document.getElementById("report-output");
     const dlBtn = document.getElementById("download-btn");
 
+    const prevInput = document.getElementById("prev_csv");
+    const currInput = document.getElementById("curr_csv");
+    const prevDrop = document.getElementById("drop-prev");
+    const currDrop = document.getElementById("drop-curr");
+    const prevLabel = document.getElementById("prev-file-label");
+    const currLabel = document.getElementById("curr-file-label");
+
     let lastFilename = "report.md";
+
+    function preventDefaults(e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+
+    function setupDropArea(dropEl, inputEl, labelEl) {
+      ["dragenter", "dragover", "dragleave", "drop"].forEach(ev => {
+        dropEl.addEventListener(ev, preventDefaults, false);
+      });
+
+      ["dragenter", "dragover"].forEach(ev => {
+        dropEl.addEventListener(ev, () => dropEl.classList.add("highlight"), false);
+      });
+      ["dragleave", "drop"].forEach(ev => {
+        dropEl.addEventListener(ev, () => dropEl.classList.remove("highlight"), false);
+      });
+
+      dropEl.addEventListener("click", () => inputEl.click());
+
+      dropEl.addEventListener("drop", (e) => {
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        inputEl.files = dt.files;
+        labelEl.textContent = file.name;
+      });
+
+      inputEl.addEventListener("change", () => {
+        if (inputEl.files && inputEl.files[0]) {
+          labelEl.textContent = inputEl.files[0].name;
+        } else {
+          labelEl.textContent = "ここにファイルをドロップするか、クリックして選択";
+        }
+      });
+    }
+
+    setupDropArea(prevDrop, prevInput, prevLabel);
+    setupDropArea(currDrop, currInput, currLabel);
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -165,8 +242,19 @@ HTML_PAGE = """<!DOCTYPE html>
         });
 
         if (!res.ok) {
-          const t = await res.text();
-          throw new Error(`エラー: ${res.status} ${t}`);
+          let serverMessage = "";
+          try {
+            const ct = res.headers.get("content-type") || "";
+            if (ct.includes("application/json")) {
+              const j = await res.json();
+              serverMessage = j.detail || JSON.stringify(j);
+            } else {
+              serverMessage = await res.text();
+            }
+          } catch (e) {
+            serverMessage = "(サーバーメッセージの解析に失敗しました)";
+          }
+          throw new Error(`サーバーエラー: ${res.status} ${serverMessage}`);
         }
 
         const data = await res.json();
@@ -176,12 +264,23 @@ HTML_PAGE = """<!DOCTYPE html>
         statusEl.textContent = "レポート生成が完了しました。Notionにコピペしてください。";
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "エラーが発生しました。コンソールログを確認してください。";
+        statusEl.textContent = err.message || "エラーが発生しました。詳細はコンソールを確認してください。";
         statusEl.classList.add("error");
       } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = "レポートを生成する";
       }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      form.reset();
+      output.value = "";
+      statusEl.textContent = "";
+      statusEl.classList.remove("error");
+      dlBtn.disabled = true;
+      lastFilename = "report.md";
+      prevLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
+      currLabel.textContent = "ここにファイルをドロップするか、クリックして選択";
     });
 
     dlBtn.addEventListener("click", () => {
@@ -202,7 +301,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 # ======================
-# CSV読み込みユーティリティ
+# CSV 読み込みユーティリティ
 # ======================
 
 def guess_column(headers, kind: str):
@@ -254,7 +353,10 @@ def load_csv_pages_from_bytes(
         except UnicodeDecodeError:
             continue
     else:
-        raise HTTPException(status_code=400, detail="CSVの文字コードが不明です（UTF-8 or Shift-JISで保存してください）")
+        raise HTTPException(
+            status_code=400,
+            detail="CSVの文字コードが不明です（UTF-8 or Shift-JISで保存してください）",
+        )
 
     f = io.StringIO(text)
     reader = csv.DictReader(f)
@@ -413,25 +515,25 @@ def generate_report_with_openai(
 - 入力データは URL ごとのオーガニックトラフィックとキーワードの情報です。
 - `is_blog` が true のページはブログ記事（/blog や /column 等）として扱ってください。
 
-【レポートの条件】
-- 初心者のお客様にもわかる言葉で説明する
-- 全体で 4,000〜6,000 文字程度
-- コードブロック（```）は使わない
-- Markdownライクな見出し・表は使用してよい
+【フォーマット（重要：Notionにそのまま貼る想定）】
+- Notion にそのままコピペできる Markdown 形式で書く
+- 見出しは必ず H2（例: `## 1. 今月のサマリー`）を使う。必要に応じて H3（`###`）も可
+- 各セクションの先頭に 1つ以上の絵文字を入れる（📈📝💡✅ など）
+- 箇条書き・番号付きリストを積極的に使う
+- 必要であれば Markdown テーブル（`|列1|列2|`）を使ってよい
+- コードブロック（```）は絶対に使わない
 
 【レポート構成】
-
-### 1. 今月のサマリー（重要ポイント3〜5個）
-
-### 2. 全体のアクセス傾向（URL / Traffic / Top keyword 観点）
-
-### 3. ブログ（/blog 等）のアクセス分析
-
-### 4. 次月以降の具体的なアクション提案（3〜5個）
+- 1. 今月のサマリー（重要ポイント3〜5個）
+- 2. 全体のアクセス傾向（URL / Traffic / Top keyword 観点）
+- 3. ブログ（/blog 等）のアクセス分析
+- 4. 次月以降の具体的なアクション提案（3〜5個）
 
 【トーン】
+- 初心者のお客様にもわかる言葉で説明する
 - 難しい専門用語は出来るだけ避ける
 - 「結論 → 根拠 → 具体例」の順で書く
+- 全体で 4,000〜6,000 文字程度
 """
 
     resp = client.responses.create(
@@ -445,6 +547,7 @@ def generate_report_with_openai(
     try:
         return resp.output[0].content[0].text
     except Exception:
+        # 何かあったときは生のレスポンスを文字列化
         return str(resp)
 
 
@@ -454,7 +557,6 @@ def generate_report_with_openai(
 
 app = FastAPI()
 
-# CORS（将来別ドメインのフロントから叩く場合も考えて一応許可）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -471,9 +573,6 @@ class ReportResponse(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """
-    トップページ：埋め込みHTMLをそのまま返す
-    """
     return HTMLResponse(HTML_PAGE)
 
 
