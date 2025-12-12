@@ -5,11 +5,24 @@ import json
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
+
+
+# ======================
+# トークン認証
+# ======================
+
+def require_access_token(x_access_token: Optional[str]) -> None:
+    expected = os.getenv("ACCESS_TOKEN")
+    # 「必須化」なので、未設定ならサーバ設定ミスとしてエラー
+    if not expected:
+        raise HTTPException(status_code=500, detail="ACCESS_TOKEN がサーバー側で設定されていません")
+    if not x_access_token or x_access_token != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ======================
@@ -48,6 +61,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     input[type="text"],
     input[type="month"],
+    input[type="password"],
     textarea {
       width: 100%;
       padding: 8px 10px;
@@ -177,6 +191,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
   <div class="card">
     <form id="report-form">
+      <label>アクセス用トークン（共通パスワード）</label>
+      <input type="password" id="access_token" placeholder="チーム共有のトークンを入力" required />
+      <span class="subtext">※ このトークンが一致しない場合、レポート生成はできません（401）</span>
+
       <label>クリニック名（タイトル用）</label>
       <input type="text" name="clinic_name" id="clinic_name" placeholder="例：長尾歯科医院" />
       <span class="subtext">未入力の場合はドメイン名で代用します</span>
@@ -223,7 +241,6 @@ HTML_PAGE = """<!DOCTYPE html>
   <div class="card" id="dash-card" style="display:none;">
     <div class="dash-title">📊 全体トラフィック（先月⇄今月）</div>
 
-    <!-- スクショ/画像化しやすい“枠” -->
     <div id="dash-wrap">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-end;flex-wrap:wrap;">
         <div style="font-weight:800;" id="dash-headline">—</div>
@@ -250,12 +267,7 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
     </div>
 
-    <span class="subtext">この枠ごとスクショしてレポートの冒頭に貼ると分かりやすいです（さらに下の「画像コピー」も使えます）</span>
-
-    <div class="button-row" style="margin-top:10px;">
-      <button type="button" class="btn btn-ghost" id="copy-dash-image-btn">ダッシュボードを画像としてコピー</button>
-      <button type="button" class="btn btn-ghost" id="download-dash-image-btn">ダッシュボードをPNGで保存</button>
-    </div>
+    <span class="subtext">この枠ごとスクショしてレポート冒頭に貼ると分かりやすいです。</span>
   </div>
 
   <div class="card">
@@ -267,9 +279,6 @@ HTML_PAGE = """<!DOCTYPE html>
       <button class="btn btn-secondary" id="download-btn" disabled>.mdとしてダウンロード</button>
     </div>
   </div>
-
-  <!-- html2canvas（ダッシュボードを画像にするため） -->
-  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 
   <script>
     const BACKEND_URL = "/generate-report";
@@ -284,6 +293,7 @@ HTML_PAGE = """<!DOCTYPE html>
     const copyBtn = document.getElementById("copy-btn");
     const charCountEl = document.getElementById("char-count");
 
+    const accessTokenInput = document.getElementById("access_token");
     const clinicNameInput = document.getElementById("clinic_name");
     const domainInput = document.getElementById("domain");
     const monthPrevInput = document.getElementById("month_prev");
@@ -299,7 +309,6 @@ HTML_PAGE = """<!DOCTYPE html>
     const currLabel = document.getElementById("curr-file-label");
 
     const dashCard = document.getElementById("dash-card");
-    const dashWrap = document.getElementById("dash-wrap");
     const dashHeadline = document.getElementById("dash-headline");
     const dashSub = document.getElementById("dash-sub");
     const dashPrev = document.getElementById("dash-prev");
@@ -309,8 +318,6 @@ HTML_PAGE = """<!DOCTYPE html>
     const barPrev = document.getElementById("bar-prev");
     const barCurrent = document.getElementById("bar-current");
     const barDiff = document.getElementById("bar-diff");
-    const copyDashImageBtn = document.getElementById("copy-dash-image-btn");
-    const downloadDashImageBtn = document.getElementById("download-dash-image-btn");
 
     let lastFilename = "report.md";
 
@@ -359,12 +366,7 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function parseHostname(url) {
-      try {
-        const u = new URL(url);
-        return u.host;
-      } catch(e) {
-        return url || "";
-      }
+      try { return new URL(url).host; } catch(e) { return url || ""; }
     }
 
     function addOneMonth(ym) {
@@ -430,54 +432,6 @@ HTML_PAGE = """<!DOCTYPE html>
       dashCard.style.display = "block";
     }
 
-    async function dashboardToCanvas() {
-      // 背景白固定にしてNotion貼り付け時に見やすくする
-      return await html2canvas(dashWrap, { backgroundColor: "#ffffff", scale: 2 });
-    }
-
-    async function copyDashboardImage() {
-      try {
-        const canvas = await dashboardToCanvas();
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
-        if (!blob) throw new Error("画像生成に失敗しました");
-
-        // ClipboardItem が使える環境なら画像コピー
-        if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
-          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-          statusEl.textContent = "ダッシュボード画像をコピーしました（Notionに貼り付けできます）";
-          statusEl.classList.remove("error");
-          return;
-        }
-
-        // フォールバック：ダウンロードを促す
-        statusEl.textContent = "この環境では画像コピーができないため、PNG保存をご利用ください。";
-        statusEl.classList.add("error");
-      } catch (e) {
-        console.error(e);
-        statusEl.textContent = "画像コピーに失敗しました。PNG保存（ダウンロード）をお試しください。";
-        statusEl.classList.add("error");
-      }
-    }
-
-    async function downloadDashboardImage() {
-      try {
-        const canvas = await dashboardToCanvas();
-        const url = canvas.toDataURL("image/png");
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "dashboard.png";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        statusEl.textContent = "ダッシュボードPNGを保存しました。Notionへドラッグで貼れます。";
-        statusEl.classList.remove("error");
-      } catch (e) {
-        console.error(e);
-        statusEl.textContent = "PNG保存に失敗しました。スクショで代替してください。";
-        statusEl.classList.add("error");
-      }
-    }
-
     setupDropArea(prevDrop, prevInput, prevLabel);
     setupDropArea(currDrop, currInput, currLabel);
 
@@ -487,7 +441,6 @@ HTML_PAGE = """<!DOCTYPE html>
     domainInput.addEventListener("input", updateTitleField);
 
     monthPrevInput.addEventListener("change", () => {
-      // 先月を選んだら今月を+1に自動反映
       monthCurrentInput.value = addOneMonth(monthPrevInput.value);
       updateTitleField();
     });
@@ -495,18 +448,15 @@ HTML_PAGE = """<!DOCTYPE html>
 
     copyTitleBtn.addEventListener("click", async () => {
       try {
-        if (!titleField.value) { updateTitleField(); }
+        if (!titleField.value) updateTitleField();
         await navigator.clipboard.writeText(titleField.value || "");
-        statusEl.textContent = "タイトルをコピーしました。Notionのページタイトルに貼り付けてください。";
+        statusEl.textContent = "タイトルをコピーしました。";
         statusEl.classList.remove("error");
       } catch(e) {
-        statusEl.textContent = "タイトルのコピーに失敗しました。手動でコピーしてください。";
+        statusEl.textContent = "タイトルのコピーに失敗しました。";
         statusEl.classList.add("error");
       }
     });
-
-    copyDashImageBtn.addEventListener("click", copyDashboardImage);
-    downloadDashImageBtn.addEventListener("click", downloadDashboardImage);
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -519,6 +469,14 @@ HTML_PAGE = """<!DOCTYPE html>
       dashCard.style.display = "none";
 
       updateTitleField();
+
+      const token = (accessTokenInput.value || "").trim();
+      if (!token) {
+        statusEl.textContent = "アクセス用トークンを入力してください。";
+        statusEl.classList.add("error");
+        return;
+      }
+
       const fd = new FormData(form);
 
       submitBtn.disabled = true;
@@ -526,7 +484,11 @@ HTML_PAGE = """<!DOCTYPE html>
       statusEl.textContent = "OpenAIでレポート生成中です…";
 
       try {
-        const res = await fetch(BACKEND_URL, { method: "POST", body: fd });
+        const res = await fetch(BACKEND_URL, {
+          method: "POST",
+          headers: { "X-Access-Token": token },
+          body: fd
+        });
 
         if (!res.ok) {
           let serverMessage = "";
@@ -547,20 +509,16 @@ HTML_PAGE = """<!DOCTYPE html>
         const data = await res.json();
         output.value = data.report || "";
         lastFilename = data.filename || "report.md";
-
         if (data.title) titleField.value = data.title;
-        updateCharCount();
 
+        updateCharCount();
         const hasText = !!output.value;
         dlBtn.disabled = !hasText;
         copyBtn.disabled = !hasText;
 
-        // ダッシュボード更新（スクショ/画像コピー用）
-        if (data.summary) {
-          updateDashboard(data.summary, titleField.value || "全体トラフィックの推移");
-        }
+        if (data.summary) updateDashboard(data.summary, titleField.value || "全体トラフィックの推移");
 
-        statusEl.textContent = "完了！タイトル→ダッシュボード（画像可）→レポート本文の順でNotionに貼るとキレイです。";
+        statusEl.textContent = "完了！Notionに貼り付けてください。";
       } catch (err) {
         console.error(err);
         statusEl.textContent = err.message || "エラーが発生しました。";
@@ -601,15 +559,14 @@ HTML_PAGE = """<!DOCTYPE html>
     copyBtn.addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText(output.value || "");
-        statusEl.textContent = "レポートをコピーしました。Notionに貼り付けてください。";
+        statusEl.textContent = "レポートをコピーしました。";
         statusEl.classList.remove("error");
       } catch(e) {
-        statusEl.textContent = "レポートのコピーに失敗しました。手動でコピーしてください。";
+        statusEl.textContent = "レポートのコピーに失敗しました。";
         statusEl.classList.add("error");
       }
     });
 
-    // 初期文字数表示
     updateCharCount();
   </script>
 </body>
@@ -653,7 +610,6 @@ def load_csv_pages_from_bytes(
     traffic_col_opt: Optional[str] = None,
     keyword_col_opt: Optional[str] = None,
 ):
-    # UTF-16 も含めて“壊れにくく”する（Ahrefs運用の揺れ対策）
     for enc in ["utf-8-sig", "cp932", "utf-16", "utf-16-le", "utf-16-be"]:
         try:
             text = file_bytes.decode(enc)
@@ -722,9 +678,7 @@ def summarize_pages(pages: List[dict]):
     total_prev = sum(p["prev_traffic"] for p in pages)
     total_current = sum(p["current_traffic"] for p in pages)
     diff = total_current - total_prev
-    diff_ratio = None
-    if total_prev > 0:
-        diff_ratio = diff / total_prev * 100.0
+    diff_ratio = (diff / total_prev * 100.0) if total_prev > 0 else None
     return {
         "total_traffic_prev": total_prev,
         "total_traffic_current": total_current,
@@ -825,7 +779,6 @@ def generate_report_with_openai(
   # {title}
 - 見出しは H2（##）中心。各H2タイトルの先頭に絵文字（📊📈📝✅💡）を付ける
 - コードブロック（```）は絶対に使わない
-- 重要な数字（全体合計・差分・変化率）は太字で強調してよい
 - 冒頭に以下を必ず入れる：
   1) 「全体サマリー表」(summary.all)
   2) 「ブログサマリー表」(summary.blog_only)
@@ -851,11 +804,7 @@ def generate_report_with_openai(
             {"role": "user", "content": json.dumps(report_input, ensure_ascii=False)},
         ],
     )
-
-    try:
-        return resp.output[0].content[0].text
-    except Exception:
-        return str(resp)
+    return resp.output[0].content[0].text
 
 
 # ======================
@@ -866,7 +815,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # ※ここは後で絞るのがおすすめ（必要なら言って）
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -887,6 +836,9 @@ async def root():
 
 @app.post("/generate-report", response_model=ReportResponse)
 async def generate_report(
+    # ヘッダーでトークンを受け取り（必須化）
+    x_access_token: Optional[str] = Header(default=None, alias="X-Access-Token"),
+
     clinic_name: str = Form(""),
     domain: str = Form(...),
     month_prev: str = Form(...),
@@ -895,6 +847,9 @@ async def generate_report(
     prev_csv: UploadFile = File(...),
     curr_csv: UploadFile = File(...),
 ):
+    # トークン認証（不一致は401）
+    require_access_token(x_access_token)
+
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY がサーバー側で設定されていません")
